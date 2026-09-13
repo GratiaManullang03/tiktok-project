@@ -1,0 +1,18 @@
+# Normalize line endings for everyone, regardless of OS/editor config.
+* text=auto eol=lf
+
+*.py     text diff=python
+*.md     text
+*.json   text
+*.yml    text
+*.yaml   text
+*.sh     text eol=lf
+Dockerfile text
+
+# Binary formats - never diff/normalize these.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
