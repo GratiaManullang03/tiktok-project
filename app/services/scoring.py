@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -7,14 +8,24 @@ from app.core.config import settings
 # real sales-velocity data is available.
 VELOCITY_REFERENCE_UNITS_PER_DAY = 50.0
 
+# ponytail: search-result counts at/above this score 0 on competition (log scale).
+# Heuristic - popular keywords like "serum" return ~300k results.
+COMPETITION_REFERENCE_RESULTS = 1_000_000
+
+# Tokopedia ratings cluster at 4.7-4.9, so a plain /5 scale barely separates products.
+# Anything at or below the floor scores 0.
+RATING_FLOOR = 4.0
+
 
 @dataclass
 class ScoreInput:
-    units_sold: Optional[int]
-    days_since_first_seen: int
-    previous_units_sold: Optional[int]
+    # Units sold per day between the two newest snapshots, and between the 2nd/3rd newest.
+    # None when there aren't enough snapshots yet.
+    recent_velocity: Optional[float]
+    previous_velocity: Optional[float]
     rating: Optional[float]
-    competitor_count: int
+    # Total search results for the keyword the product was found under.
+    competitor_count: Optional[int]
 
 
 @dataclass
@@ -63,24 +74,25 @@ class ProductScoringService:
         )
 
     def _sales_velocity_score(self, data: ScoreInput) -> float:
-        if not data.units_sold:
+        if not data.recent_velocity:
             return 0.0
-        days = max(data.days_since_first_seen, 1)
-        velocity = data.units_sold / days
-        return min(velocity / VELOCITY_REFERENCE_UNITS_PER_DAY * 100, 100.0)
+        return min(data.recent_velocity / VELOCITY_REFERENCE_UNITS_PER_DAY * 100, 100.0)
 
     def _growth_score(self, data: ScoreInput) -> float:
-        if data.previous_units_sold is None or data.units_sold is None:
+        if data.previous_velocity is None or data.recent_velocity is None:
             return 0.0
-        if data.previous_units_sold == 0:
-            return 100.0 if data.units_sold > 0 else 0.0
-        growth = (data.units_sold - data.previous_units_sold) / data.previous_units_sold
+        if data.previous_velocity == 0:
+            return 100.0 if data.recent_velocity > 0 else 0.0
+        growth = (data.recent_velocity - data.previous_velocity) / data.previous_velocity
         return max(min(growth * 100, 100.0), 0.0)
 
     def _rating_score(self, data: ScoreInput) -> float:
         if not data.rating:
             return 0.0
-        return min(data.rating / 5.0 * 100, 100.0)
+        return max(min((data.rating - RATING_FLOOR) / (5.0 - RATING_FLOOR) * 100, 100.0), 0.0)
 
     def _competition_score(self, data: ScoreInput) -> float:
-        return 100.0 / (1 + data.competitor_count)
+        if data.competitor_count is None:
+            return 0.0
+        ratio = math.log10(1 + data.competitor_count) / math.log10(1 + COMPETITION_REFERENCE_RESULTS)
+        return max(100.0 * (1 - ratio), 0.0)

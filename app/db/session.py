@@ -15,6 +15,7 @@ def get_connection() -> psycopg2.extensions.connection:
         password=settings.PGPASSWORD,
         sslmode=settings.PGSSLMODE,
         channel_binding=settings.PGCHANNELBINDING,
+        connect_timeout=settings.PGCONNECT_TIMEOUT,
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
 

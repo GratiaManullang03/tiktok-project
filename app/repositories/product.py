@@ -72,19 +72,6 @@ class ProductRepository(BaseRepository):
             rows = cur.fetchall()
         return rows, total
 
-    def count_active_in_category(self, db, category: Optional[str], exclude_product_id: int) -> int:
-        """Number of other active products in the same category - used as a competition signal."""
-        if not category:
-            return 0
-        with db.cursor() as cur:
-            cur.execute(
-                f"SELECT COUNT(*) AS count FROM {TABLE} "
-                f"WHERE mp_category = %(category)s AND is_active = TRUE "
-                f"AND is_deleted = FALSE AND mp_id != %(exclude_id)s",
-                {"category": category, "exclude_id": exclude_product_id},
-            )
-            return cur.fetchone()["count"]
-
     def soft_delete(self, db, product_id: int) -> Optional[psycopg2.extras.RealDictRow]:
         """Does not commit - caller owns the transaction boundary."""
         with db.cursor() as cur:

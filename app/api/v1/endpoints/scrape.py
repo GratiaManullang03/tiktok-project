@@ -5,8 +5,7 @@ from app.db.session import get_db
 from app.repositories.scrape_job import ScrapeJobRepository
 from app.schemas.scrape_job import ScrapeRunRequest, ScrapeJob
 from app.schemas.common import DataResponse, PaginationResponse
-from app.services.pipeline import run_scrape_job
-from app.services.scrapers.tokopedia_scraper import SOURCE_NAME
+from app.services.pipeline import create_scrape_job, run_scrape_job
 
 router = APIRouter()
 job_repo = ScrapeJobRepository()
@@ -19,15 +18,7 @@ def run_scrape(
     db: Connection = Depends(get_db),
 ):
     """Kick off a scrape job in the background and return its id immediately."""
-    job = job_repo.create(
-        db,
-        {
-            "tsj_keyword": request.keyword,
-            "tsj_source": SOURCE_NAME,
-            "tsj_status": "pending",
-        },
-    )
-    db.commit()
+    job = create_scrape_job(db, request.keyword, request.limit)
     background_tasks.add_task(run_scrape_job, job["tsj_id"], request.keyword, request.limit)
 
     return DataResponse(

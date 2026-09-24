@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 import psycopg2.extras
 
 from app.db.session import get_connection
@@ -7,7 +8,7 @@ from app.repositories.metric_snapshot import MetricSnapshotRepository
 from app.repositories.score import ScoreRepository
 from app.repositories.analysis import AnalysisRepository
 from app.repositories.scrape_job import ScrapeJobRepository
-from app.services.scrapers.tokopedia_scraper import TokopediaScraper
+from app.services.scrapers.tokopedia_scraper import TokopediaScraper, SOURCE_NAME
 from app.services.scrapers.base import RawProduct
 from app.services.scoring import ProductScoringService, ScoreInput, ScoreBreakdown
 from app.services.llm_analysis import GroqAnalysisService
@@ -21,16 +22,36 @@ scoring_service = ProductScoringService()
 analysis_service = GroqAnalysisService()
 scraper = TokopediaScraper()
 
+# Snapshots closer together than this are treated as the same observation - a product found
+# under two keywords in one rescrape run, or a manual scrape on top of the daily cron, would
+# otherwise yield a near-zero sales delta.
+MIN_SNAPSHOT_GAP = timedelta(hours=20)
+# ponytail: how many recent snapshots to scan for spaced-out ones; plenty for daily rescrapes,
+# raise it if a product gets scraped many times a day.
+SNAPSHOT_WINDOW = 30
 
-async def run_scrape_job(job_id: int, keyword: str, limit: int) -> None:
+
+def create_scrape_job(db, keyword: str, limit: int) -> psycopg2.extras.RealDictRow:
+    """Insert a pending job row and commit, so it's visible before the background run starts."""
+    job = job_repo.create(
+        db,
+        {"tsj_keyword": keyword, "tsj_limit": limit, "tsj_source": SOURCE_NAME, "tsj_status": "pending"},
+    )
+    db.commit()
+    return job
+
+
+def run_scrape_job(job_id: int, keyword: str, limit: int) -> None:
     """Full pipeline: scrape -> upsert product + metrics -> score. Runs as a background task
-    with its own DB connection, since it outlives the original request."""
+    with its own DB connection, since it outlives the original request. Plain `def` on purpose:
+    FastAPI runs sync background tasks in a threadpool, so the blocking psycopg2/httpx calls
+    don't stall the event loop."""
     db = get_connection()
     try:
         job_repo.update(db, job_id, {"tsj_status": "running"})
         db.commit()
 
-        raw_products = await scraper.search_products(keyword, limit)
+        raw_products = scraper.search_products(keyword, limit)
 
         products_found = 0
         errors: list[str] = []
@@ -105,33 +126,50 @@ def _save_metric_snapshot(db, product_id: int, raw: RawProduct) -> None:
             "hpm_units_sold": raw.units_sold,
             "hpm_revenue": raw.revenue,
             "hpm_rating": raw.rating,
-            "hpm_review_count": raw.review_count,
-            "hpm_commission_rate": raw.commission_rate,
-            "hpm_video_count": raw.video_count,
+            "hpm_competitor_count": raw.competitor_count,
         },
     )
 
 
+def _spaced_snapshots(snapshots: list) -> list:
+    """Newest snapshot, then each next one at least MIN_SNAPSHOT_GAP older than the last pick.
+    `snapshots` is newest first."""
+    picked = []
+    for snap in snapshots:
+        if not picked or picked[-1]["created_at"] - snap["created_at"] >= MIN_SNAPSHOT_GAP:
+            picked.append(snap)
+    return picked
+
+
+def _units_per_day(newer, older) -> Optional[float]:
+    """Sales rate between two snapshots. `hpm_units_sold` is a lifetime total, so only the
+    delta between snapshots says how fast a product is selling *now*."""
+    if newer is None or older is None:
+        return None
+    if newer["hpm_units_sold"] is None or older["hpm_units_sold"] is None:
+        return None
+    days = (newer["created_at"] - older["created_at"]).total_seconds() / 86400
+    return max(newer["hpm_units_sold"] - older["hpm_units_sold"], 0) / days
+
+
 def score_product(db, product_id: int) -> psycopg2.extras.RealDictRow:
     """Recompute and persist the score for one product from its latest metrics.
-    Part of the caller's transaction - does not commit."""
-    product = product_repo.get(db, product_id)
-    snapshots = metric_repo.get_latest(db, product_id, n=2)
-    latest = snapshots[0] if snapshots else None
-    previous = snapshots[1] if len(snapshots) > 1 else None
+    Velocity needs 2 snapshots >= MIN_SNAPSHOT_GAP apart, growth needs 3 - until then those
+    components score 0. Part of the caller's transaction - does not commit."""
+    recent = metric_repo.get_latest(db, product_id, n=SNAPSHOT_WINDOW)
+    s0, s1, s2 = (_spaced_snapshots(recent) + [None, None, None])[:3]
 
-    days_since_first_seen = (datetime.now(timezone.utc) - product["created_at"]).days
-    competitor_count = product_repo.count_active_in_category(
-        db, product["mp_category"], product["mp_id"]
-    )
+    # competitor_count belongs to the keyword a snapshot was scraped under, not the product.
+    # Taking the minimum across recent snapshots (the narrowest niche it ranks in) keeps the
+    # score from flipping with whichever keyword happened to run last.
+    competitor_counts = [s["hpm_competitor_count"] for s in recent if s["hpm_competitor_count"] is not None]
 
     breakdown = scoring_service.compute(
         ScoreInput(
-            units_sold=latest["hpm_units_sold"] if latest else None,
-            days_since_first_seen=days_since_first_seen,
-            previous_units_sold=previous["hpm_units_sold"] if previous else None,
-            rating=float(latest["hpm_rating"]) if latest and latest["hpm_rating"] is not None else None,
-            competitor_count=competitor_count,
+            recent_velocity=_units_per_day(s0, s1),
+            previous_velocity=_units_per_day(s1, s2),
+            rating=float(s0["hpm_rating"]) if s0 and s0["hpm_rating"] is not None else None,
+            competitor_count=min(competitor_counts) if competitor_counts else None,
         )
     )
 
@@ -165,7 +203,8 @@ def analyze_product(db, product_id: int) -> psycopg2.extras.RealDictRow:
             competition_score=float(score["hps_competition_score"]),
         )
 
-        result = analysis_service.analyze(product, breakdown)
+        latest_metrics = metric_repo.get_latest(db, product_id, n=1)
+        result = analysis_service.analyze(product, breakdown, latest_metrics[0] if latest_metrics else None)
 
         analysis = analysis_repo.create(
             db,

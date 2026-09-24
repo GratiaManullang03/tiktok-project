@@ -24,13 +24,12 @@ class RawProduct:
     units_sold: Optional[int] = None
     revenue: Optional[float] = None
     rating: Optional[float] = None
-    review_count: Optional[int] = None
-    commission_rate: Optional[float] = None
-    video_count: Optional[int] = None
+    # Total search results for the keyword - market-level competition signal.
+    competitor_count: Optional[int] = None
 
 
 class BaseScraper(ABC):
     @abstractmethod
-    async def search_products(self, keyword: str, limit: int = 20) -> List[RawProduct]:
+    def search_products(self, keyword: str, limit: int = 20) -> List[RawProduct]:
         """Search TikTok Shop for products matching `keyword`."""
         raise NotImplementedError

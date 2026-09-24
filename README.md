@@ -65,6 +65,11 @@ uvicorn app.main:app --reload --port 8000
 ## 🔄 Alur Kerja
 
 1. **`POST /api/v1/scrape/run`** dengan `{"keyword": "..."}` — menjalankan scraper (search API publik Tokopedia, gratis, tidak butuh API key) di background, menyimpan produk + metric snapshot, lalu otomatis menghitung skor tiap produk.
+   Skor velocity butuh minimal 2 snapshot dan growth butuh 3 (angka terjual dari Tokopedia itu total seumur produk, jadi yang dihitung selisih antar-scrape). Jadwalkan scrape ulang harian:
+   ```bash
+   python scripts/rescrape.py            # scrape ulang semua keyword yang pernah dipakai
+   # cron: 0 7 * * * cd /path/to/tiktok-project && venv/bin/python scripts/rescrape.py
+   ```
 2. **`GET /api/v1/products`** — daftar produk terurut berdasarkan skor tertinggi.
 3. **`POST /api/v1/products/{id}/analyze`** — memicu analisis LLM (Groq) untuk satu produk: ringkasan, kekuatan, risiko, target audiens, sudut pandang marketing, dan verdict (buy/watch/avoid).
 
@@ -143,7 +148,7 @@ alembic downgrade -1                   # ~ php artisan migrate:rollback
 |---|---|
 | `PGHOST` / `PGDATABASE` / `PGUSER` / `PGPASSWORD` / `PGSSLMODE` / `PGCHANNELBINDING` | kredensial Postgres eksternal (Neon) |
 | `GROQ_API_KEY` / `GROQ_MODEL` | kredensial & model Groq untuk tahap LLM Analysis (model harus dukung `json_mode`, cek `docs/models.json`) |
-| `SCORE_WEIGHT_*` | bobot formula scoring (sales velocity, growth, rating, competition) |
+| `SCORE_WEIGHT_*` | bobot formula scoring (sales velocity, growth, rating, competition) - total wajib 1.0, app gagal start kalau tidak |
 
 `.env` sudah di-`.gitignore` — jangan pernah commit file itu. Pakai `.env.example` sebagai referensi. Jalankan `python scripts/fetch_groq_models.py` sewaktu-waktu untuk refresh `docs/models.json` kalau line-up model Groq berubah.
 
@@ -161,8 +166,8 @@ app/
 └── services/     # Business logic: scrapers/, scoring, llm_analysis, pipeline
 migrations/       # Alembic - migration schema, hand-written
 docs/             # ERDRULES.md, models.json (snapshot katalog model Groq)
-scripts/          # Utility script (fetch_groq_models.py)
-tests/            # Unit test (scoring formula + wiring pipeline)
+scripts/          # Utility script (fetch_groq_models.py, rescrape.py)
+tests/            # Unit test (scoring formula, wiring pipeline, parser scraper)
 ```
 
 ---

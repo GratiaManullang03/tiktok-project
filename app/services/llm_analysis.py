@@ -24,8 +24,8 @@ class GroqAnalysisService:
         self.client = Groq(api_key=settings.GROQ_API_KEY)
         self.model = settings.GROQ_MODEL
 
-    def analyze(self, product, score: ScoreBreakdown) -> AnalysisResult:
-        prompt = self._build_prompt(product, score)
+    def analyze(self, product, score: ScoreBreakdown, metrics=None) -> AnalysisResult:
+        prompt = self._build_prompt(product, score, metrics)
 
         raw = self._call_llm(prompt)
         try:
@@ -50,12 +50,27 @@ class GroqAnalysisService:
         )
         return completion.choices[0].message.content
 
-    def _build_prompt(self, product, score: ScoreBreakdown) -> str:
+    def _build_prompt(self, product, score: ScoreBreakdown, metrics=None) -> str:
+        # Raw numbers alongside the scores, so the LLM can sanity-check the score instead of
+        # only echoing it.
+        lines = {
+            "Units sold (lifetime)": "hpm_units_sold",
+            f"Estimated lifetime revenue ({product['mp_currency']})": "hpm_revenue",
+            "Rating (out of 5)": "hpm_rating",
+            "Total search results for the keyword (competition proxy)": "hpm_competitor_count",
+        }
+        # Missing values are left out rather than printed as "None", which reads like zero.
+        raw = "".join(
+            f"{label}: {metrics[key]}\n"
+            for label, key in lines.items()
+            if metrics and metrics.get(key) is not None
+        )
         return (
             f"Product: {product['mp_name']}\n"
             f"Category: {product['mp_category']}\n"
             f"Price: {product['mp_price']} {product['mp_currency']}\n"
             f"Shop: {product['mp_shop_name']}\n"
+            f"{raw}"
             f"Score breakdown: total={score.total_score}, "
             f"sales_velocity={score.sales_velocity_score}, "
             f"growth={score.growth_score}, rating={score.rating_score}, "

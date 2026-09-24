@@ -17,6 +17,7 @@ class ScrapeJob(BaseModel):
     tsj_keyword: str
     tsj_source: str
     tsj_status: JobStatus
+    tsj_limit: Optional[int] = None
     tsj_finished_at: Optional[datetime] = None
     tsj_products_found: Optional[int] = None
     tsj_error_message: Optional[str] = None
